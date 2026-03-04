@@ -1,3 +1,145 @@
+// ===== スマートフィルター（ローカルリスク判定 v2） =====
+function judgeDmRisk(signals) {
+  const LABELS = {
+    talkedInvestmentHighIncome: "投資・副業・高収入の話をしてきた",
+    requestedAdvanceFeeDeposit: "前払い・手数料・保証金を要求してきた",
+    requestedAdditionalPayment: "送金後に追加送金を要求してきた",
+    changedPaymentMethod: "送金手段を途中で変更してきた",
+    restrictedPaymentCryptoGift: "送金手段を暗号資産/ギフト券に限定してきた",
+    guidedToExternalApp: "外部アプリに誘導してきた",
+    sentLink: "リンクを送ってきた",
+    threatenedLegalAction: "凍結・通報・法的措置の話で不安を煽ってきた",
+    requestedPersonalInfo: "身分証・個人情報・口座情報を要求してきた",
+    requestedSmsOr2faCode: "SMS/2FAコードを要求してきた",
+    requestedRemoteControlApp: "遠隔操作アプリ導入を要求してきた",
+    claimedCelebrityOrAuthority: "有名人・公式・先生・業界人を名乗っている",
+    requestedSecrecy: "秘密にするよう求められた",
+    askedToInviteFriends: "友人・知人を誘うよう求められた",
+    screenshotOnlyProof: "画像スクショだけで取引証明しようとした",
+    unnaturalJapaneseOrContradiction: "日本語が不自然/説明が矛盾している",
+    // 学生フラグブースト用
+    studentWelcomeEasyMoney: "「学生歓迎」「簡単に高収入」「即金」の言葉があった",
+    twoPersonSecret: "「二人だけの秘密」「誰にも言うな」と言われた",
+    dreamCareerSpecialTreatment: "夢・進路・芸能相談＋特別扱いを強調された",
+  };
+
+  const WEIGHTS = {
+    requestedAdvanceFeeDeposit: 3,
+    requestedAdditionalPayment: 3,
+    restrictedPaymentCryptoGift: 3,
+    requestedPersonalInfo: 3,
+    requestedSmsOr2faCode: 3,
+    requestedRemoteControlApp: 3,
+    talkedInvestmentHighIncome: 2,
+    changedPaymentMethod: 2,
+    guidedToExternalApp: 2,
+    threatenedLegalAction: 2,
+    claimedCelebrityOrAuthority: 2,
+    requestedSecrecy: 2,
+    askedToInviteFriends: 2,
+    screenshotOnlyProof: 2,
+    sentLink: 1,
+    unnaturalJapaneseOrContradiction: 1,
+    studentWelcomeEasyMoney: 2,
+    twoPersonSecret: 2,
+    dreamCareerSpecialTreatment: 2,
+  };
+
+  const SINGLE_BLOCK = [
+    'requestedAdvanceFeeDeposit',
+    'restrictedPaymentCryptoGift',
+    'requestedSmsOr2faCode',
+    'requestedRemoteControlApp',
+  ];
+
+  const COMBO_BLOCKS = [
+    { items: ['requestedAdditionalPayment', 'requestedAdvanceFeeDeposit'], label: '追加送金＋前払い要求' },
+    { items: ['requestedAdditionalPayment', 'changedPaymentMethod'], label: '追加送金＋送金手段変更' },
+    { items: ['guidedToExternalApp', 'requestedPersonalInfo'], label: '外部誘導＋個人情報要求' },
+    { items: ['claimedCelebrityOrAuthority', 'requestedSecrecy', 'requestedAdvanceFeeDeposit'], label: '権威名乗り＋秘密強要＋前払い' },
+    { items: ['screenshotOnlyProof', 'requestedAdvanceFeeDeposit'], label: 'スクショ証明のみ＋先払い要求' },
+  ];
+
+  const matchedKeys = Object.keys(LABELS).filter(k => !!signals[k]);
+  const matchedItems = matchedKeys.map(k => LABELS[k]);
+
+  // 単体BLOCK
+  const singleBlockHits = SINGLE_BLOCK.filter(k => !!signals[k]);
+  // 組み合わせBLOCK
+  const comboBlockHits = COMBO_BLOCKS.filter(c => c.items.every(k => !!signals[k]));
+
+  if (singleBlockHits.length > 0 || comboBlockHits.length > 0) {
+    const reasons = [
+      ...singleBlockHits.map(k => LABELS[k]),
+      ...comboBlockHits.map(c => c.label),
+    ].slice(0, 3);
+    // 実スコアも計算する（Grokへの参考値として）
+    let blockScore = 0;
+    Object.keys(WEIGHTS).forEach(k => { if (signals[k]) blockScore += WEIGHTS[k]; });
+    return { riskLevel: 'BLOCK', score: blockScore, matchedItems, reasons, matchedBlockRules: comboBlockHits.map(c => c.label) };
+  }
+
+  // スコア計算
+  let score = 0;
+  const scored = [];
+  Object.keys(WEIGHTS).forEach(k => {
+    if (signals[k]) { score += WEIGHTS[k]; scored.push({ key: k, pts: WEIGHTS[k] }); }
+  });
+
+  // ブースト
+  const boosts = [];
+  if (signals.talkedInvestmentHighIncome && signals.requestedAdvanceFeeDeposit) { score += 3; boosts.push('投資・副業＋前払い要求'); }
+  if (signals.guidedToExternalApp && signals.sentLink) { score += 2; boosts.push('外部誘導＋リンク送付'); }
+  if (signals.claimedCelebrityOrAuthority && signals.requestedSecrecy) { score += 2; boosts.push('権威名乗り＋秘密強要'); }
+  // 学生フラグブースト
+  if (signals.studentWelcomeEasyMoney) { score += 2; boosts.push('学生歓迎・即金の言葉あり'); }
+  if (signals.twoPersonSecret) { score += 2; boosts.push('二人だけの秘密・口止め'); }
+  if (signals.claimedCelebrityOrAuthority && signals.requestedPersonalInfo) { score += 3; boosts.push('先生・業界人名乗り＋個人情報要求'); }
+  if (signals.dreamCareerSpecialTreatment) { score += 2; boosts.push('夢・進路相談＋特別扱い強調'); }
+
+  let riskLevel = 'LOW';
+  if (score >= 10) riskLevel = 'CRITICAL';
+  else if (score >= 7) riskLevel = 'HIGH';
+  else if (score >= 4) riskLevel = 'MEDIUM';
+
+  const topReasons = scored.sort((a, b) => b.pts - a.pts).slice(0, 3).map(x => LABELS[x.key]);
+  const reasons = [...boosts, ...topReasons].slice(0, 3);
+  return { riskLevel, score, matchedItems, reasons, matchedBlockRules: [] };
+}
+
+// チェックボックスラベル→シグナルキー変換
+const LABEL_TO_SIGNAL = {
+  '投資・副業・高収入の話をしてきた': 'talkedInvestmentHighIncome',
+  '前払い・手数料・保証金を要求してきた': 'requestedAdvanceFeeDeposit',
+  '送金後に追加送金を要求してきた': 'requestedAdditionalPayment',
+  '送金手段を途中で変更してきた（例: PayPay→ギフト券）': 'changedPaymentMethod',
+  '送金手段を暗号資産/ギフト券に限定してきた': 'restrictedPaymentCryptoGift',
+  'LINE・Discord・Telegram・Signalなど外部アプリに誘導してきた': 'guidedToExternalApp',
+  'リンク（URL）を送ってきた': 'sentLink',
+  '凍結・通報・法的措置の話で不安を煽ってきた': 'threatenedLegalAction',
+  '身分証・個人情報・口座情報を要求してきた': 'requestedPersonalInfo',
+  'SMS/2FAコードを要求してきた': 'requestedSmsOr2faCode',
+  '遠隔操作アプリ導入を要求してきた': 'requestedRemoteControlApp',
+  '有名人・公式・先生・業界人を名乗っている': 'claimedCelebrityOrAuthority',
+  '秘密にするよう求められた': 'requestedSecrecy',
+  '友人・知人を誘うよう求められた': 'askedToInviteFriends',
+  '画像スクショだけで取引証明しようとした': 'screenshotOnlyProof',
+  '日本語が不自然/説明が矛盾している': 'unnaturalJapaneseOrContradiction',
+  // 学生フラグ
+  '「学生歓迎」「簡単に高収入」「即金」の言葉があった': 'studentWelcomeEasyMoney',
+  '「二人だけの秘密」「誰にも言うな」と言われた': 'twoPersonSecret',
+  '夢・進路・芸能相談＋特別扱いを強調された': 'dreamCareerSpecialTreatment',
+};
+
+function buildSignalsFromChecked(checkedLabels) {
+  const signals = {};
+  checkedLabels.forEach(label => {
+    const key = LABEL_TO_SIGNAL[label];
+    if (key) signals[key] = true;
+  });
+  return signals;
+}
+
 // ===== データ同期・マイグレーション用キャッシュ =====
 let gckStorage = {
   whitelist: {},
@@ -93,15 +235,14 @@ const TEMPLATE_KEYS = {
 
 // カテゴリ定義
 const SCAM_CATEGORIES = {
-  '投資・副業': ['投資・副業の話をしてきた', '急にお金の話になった', '前払い・手数料・保証金を要求してきた'],
-  'ロマンス': ['ビデオ通話を拒否された', '鍵アカウントに誘導してきた', '秘密にするよう求められた'],
-  'グルーミング・海外案件': ['海外旅行・仕事を誘われた', '高額報酬・日当を提示された', '友人・知人も誘うよう求められた', 'パスポート・貴重品を預けるよう言われた', '有名人なのに内緒の仕事に誘われた', '集合場所や詳細が直前に変わった'],
-  'ゲーム・アイテム': ['ゲーム・アイテム交換の話をしてきた', 'LINE・Discord・Telegramなど外部アプリに誘導してきた'],
-  'なりすまし': ['有名人・公式を名乗っている', '日本語が不自然', 'アカウント凍結・通報の話をしてきた'],
-  'その他': ['リンクを送ってきた', 'パスポート・身分証の写真を要求してきた', '主催・会社情報が曖昧'],
+  '金銭・送金': ['投資・副業・高収入の話をしてきた', '前払い・手数料・保証金を要求してきた', '送金後に追加送金を要求してきた', '送金手段を途中で変更してきた（例: PayPay→ギフト券）', '送金手段を暗号資産/ギフト券に限定してきた'],
+  '誘導・フィッシング': ['LINE・Discord・Telegram・Signalなど外部アプリに誘導してきた', 'リンク（URL）を送ってきた', '遠隔操作アプリ導入を要求してきた', 'SMS/2FAコードを要求してきた'],
+  '脅迫・なりすまし': ['凍結・通報・法的措置の話で不安を煽ってきた', '有名人・公式・先生・業界人を名乗っている', '日本語が不自然/説明が矛盾している'],
+  '個人情報・秘密': ['身分証・個人情報・口座情報を要求してきた', '秘密にするよう求められた', '画像スクショだけで取引証明しようとした'],
+  '勧誘・その他': ['友人・知人を誘うよう求められた'],
 };
 
-const CATEGORY_KEY = 'gck_categories';
+const CATEGORY_KEY = 'gck_categories_v2';  // v2: カテゴリ再設計で旧データを自動無効化
 const FILTER_STRENGTH_KEY = 'gck_filter_strength';
 
 function getCategories() {
@@ -209,7 +350,7 @@ function getHandleFromPage() {
   return null;
 }
 
-function buildGrokQuery(handle, dmText, relationship, extraInfo, trustLevel, isYouth) {
+function buildGrokQuery(handle, dmText, relationship, extraInfo, trustLevel, isYouth, localNote = '') {
   const dmSection = dmText
     ? `【受け取ったDM内容】\n${dmText}\n`
     : '【DM内容】未入力\n';
@@ -247,7 +388,7 @@ function buildGrokQuery(handle, dmText, relationship, extraInfo, trustLevel, isY
       ? '\n※少しでも怪しい点があれば厳しめに指摘してにゃ。見落とし厳禁にゃ。\n'
       : '';
 
-  return `${prefix}${trustNote}${youthNote}${strengthNote}
+  return `${prefix}${trustNote}${youthNote}${strengthNote}${localNote}
 
 【アカウント基本チェック】
 ・推定国・地域（言語・絵文字・タイムゾーンから）
@@ -386,37 +527,71 @@ function showModal(handle, onSubmit) {
 
   const checkLabel = makeLabel('🚩 気になる点（チェックボックス）');
   const checkItems = [
-    '投資・副業の話をしてきた',
-    'リンクを送ってきた',
-    'ビデオ通話を拒否された',
-    '急にお金の話になった',
-    '海外旅行・仕事を誘われた',
-    'アカウント凍結・通報の話をしてきた',
-    '有名人・公式を名乗っている',
-    '日本語が不自然',
-    'ゲーム・アイテム交換の話をしてきた',
-    'LINE・Discord・Telegramなど外部アプリに誘導してきた',
-    '鍵アカウントに誘導してきた',
+    '投資・副業・高収入の話をしてきた',
     '前払い・手数料・保証金を要求してきた',
-    'パスポート・身分証の写真を要求してきた',
-    '集合場所や詳細が直前に変わった',
-    '主催・会社情報が曖昧',
-    '高額報酬・日当を提示された',
-    '友人・知人も誘うよう求められた',
-    'パスポート・貴重品を預けるよう言われた',
-    '有名人なのに内緒の仕事に誘われた',
+    '送金後に追加送金を要求してきた',
+    '送金手段を途中で変更してきた（例: PayPay→ギフト券）',
+    '送金手段を暗号資産/ギフト券に限定してきた',
+    'LINE・Discord・Telegram・Signalなど外部アプリに誘導してきた',
+    'リンク（URL）を送ってきた',
+    '凍結・通報・法的措置の話で不安を煽ってきた',
+    '身分証・個人情報・口座情報を要求してきた',
+    'SMS/2FAコードを要求してきた',
+    '遠隔操作アプリ導入を要求してきた',
+    '有名人・公式・先生・業界人を名乗っている',
     '秘密にするよう求められた',
+    '友人・知人を誘うよう求められた',
+    '画像スクショだけで取引証明しようとした',
+    '日本語が不自然/説明が矛盾している',
   ];
 
-  // 若年層向け追加チェック項目
+  // 学生フラグON時の追加チェック項目（ブースト用）
   const youthExtraItems = [
-    '将来の夢（漫画・芸能など）や仕事の相談内容',
-    '「二人だけの秘密」や口止めを促されている',
-    '相手が「有名人」「先生」「業界人」などの立場',
-    '自撮りや身分証、連絡先の交換を求められた',
-    'オーディション名目・内緒の仕事の誘い',
-    '「特別扱い」を強調してきた'
+    '「学生歓迎」「簡単に高収入」「即金」の言葉があった',
+    '「二人だけの秘密」「誰にも言うな」と言われた',
+    '夢・進路・芸能相談＋特別扱いを強調された',
   ];
+
+  // リスクメーター
+  const riskMeter = document.createElement('div');
+  riskMeter.className = 'gck-risk-meter';
+  riskMeter.style.display = 'none';
+
+  function refreshRiskMeter() {
+    const allChecked = [...checkboxGroup.querySelectorAll('input:checked')].map(cb => cb.value);
+    if (allChecked.length === 0) { riskMeter.style.display = 'none'; return; }
+    const signals = buildSignalsFromChecked(allChecked);
+    const result = judgeDmRisk(signals);
+    const colors = { LOW: '#2a7a4a', MEDIUM: '#b07a00', HIGH: '#c05000', CRITICAL: '#aa0000', BLOCK: '#aa0000' };
+    const bgColors = { LOW: '#0a1a0f', MEDIUM: '#1a1200', HIGH: '#1a0800', CRITICAL: '#1a0000', BLOCK: '#1a0000' };
+    const icons = { LOW: '✅', MEDIUM: '⚠️', HIGH: '🚨', CRITICAL: '🔴', BLOCK: '🛑' };
+    const levelText = { LOW: 'LOW', MEDIUM: 'MEDIUM — 注意', HIGH: 'HIGH — 高リスク', CRITICAL: 'CRITICAL — 極めて危険', BLOCK: 'BLOCK — 即ブロック推奨' };
+    riskMeter.style.display = 'block';
+    riskMeter.style.borderColor = colors[result.riskLevel];
+    riskMeter.style.background = bgColors[result.riskLevel];
+    riskMeter.innerHTML = '';
+    const levelEl = document.createElement('div');
+    levelEl.className = 'gck-risk-level';
+    levelEl.style.color = colors[result.riskLevel];
+    levelEl.textContent = icons[result.riskLevel] + ' ' + levelText[result.riskLevel] + (result.riskLevel !== 'BLOCK' ? '  (スコア: ' + result.score + ')' : '');
+    riskMeter.appendChild(levelEl);
+    if (result.reasons.length > 0) {
+      const reasonEl = document.createElement('div');
+      reasonEl.className = 'gck-risk-reasons';
+      result.reasons.forEach(r => {
+        const span = document.createElement('span');
+        span.className = 'gck-risk-tag';
+        span.textContent = r;
+        reasonEl.appendChild(span);
+      });
+      riskMeter.appendChild(reasonEl);
+    }
+    if (result.riskLevel === 'BLOCK' || result.riskLevel === 'CRITICAL') {
+      riskMeter.classList.add('gck-risk-blink');
+    } else {
+      riskMeter.classList.remove('gck-risk-blink');
+    }
+  }
 
   const checkboxGroup = document.createElement('div');
   checkboxGroup.className = 'gck-checkbox-group';
@@ -430,6 +605,7 @@ function showModal(handle, onSubmit) {
     cb.type = 'checkbox';
     cb.value = item;
     cb.className = 'gck-checkbox';
+    cb.addEventListener('change', refreshRiskMeter);
     lbl.appendChild(cb);
     lbl.appendChild(document.createTextNode(' ' + item));
     checkboxGroup.appendChild(lbl);
@@ -448,6 +624,7 @@ function showModal(handle, onSubmit) {
     cb.className = 'gck-checkbox';
     cb.style.accentColor = '#ffaa33';
     cb.classList.add('gck-youth-cb'); // 区別用クラス
+    cb.addEventListener('change', refreshRiskMeter);
     lbl.appendChild(cb);
     lbl.appendChild(document.createTextNode(' ' + item));
     checkboxGroup.appendChild(lbl);
@@ -498,7 +675,7 @@ function showModal(handle, onSubmit) {
   // スクロールエリア
   const modalScroll = document.createElement('div');
   modalScroll.className = 'gck-modal-scroll';
-  modalScroll.append(youthWrap, dmLabel, dmInput, relLabel, relSelect, relHint, checkLabel, checkboxGroup, extraLabel, extraInput, privacy);
+  modalScroll.append(youthWrap, dmLabel, dmInput, relLabel, relSelect, relHint, checkLabel, riskMeter, checkboxGroup, extraLabel, extraInput, privacy);
 
   // ボタン行（固定）
   const modalBottom = document.createElement('div');
@@ -526,20 +703,24 @@ function showModal(handle, onSubmit) {
   submitBtn.addEventListener('click', () => {
     const dm = dmInput.value.trim().slice(0, 800);
     const rel = relSelect.value;
-
-    // 通常のチェック項目
     const checked = [...checkboxGroup.querySelectorAll('input:checked:not(.gck-youth-cb)')].map(cb => cb.value);
-
-    // ユース向け追加チェック項目
     const youthChecked = youthCheckbox.checked
       ? [...checkboxGroup.querySelectorAll('input.gck-youth-cb:checked')].map(cb => cb.value)
       : [];
-
     const extraText = extraInput.value.trim().slice(0, 200);
-    const extra = [...checked, ...youthChecked, ...(extraText ? [extraText] : [])].join(' / ').slice(0, 400);
+    const allChecked = [...checked, ...youthChecked];
+    const signals = buildSignalsFromChecked(allChecked);
+    const localResult = judgeDmRisk(signals);
 
+    // localNote：件数＋主因のみ（重複排除・圧縮）
+    const riskLabel = { BLOCK: '即遮断条件に該当', CRITICAL: '極めて高リスク', HIGH: '高リスク', MEDIUM: '中程度のリスク', LOW: '低リスク' };
+    const localNote = allChecked.length > 0
+      ? `\n【ローカル事前判定】${riskLabel[localResult.riskLevel]} / ${localResult.matchedItems.length}件一致 / 主因:[${localResult.reasons.slice(0,2).join(' / ')}]${localResult.matchedBlockRules.length > 0 ? ' / 即遮断ルール:[' + localResult.matchedBlockRules[0] + ']' : ''}\n`
+      : '';
+    // extraはフリーテキストのみ（チェックボックス項目は重複するので除外）
+    const extra = extraText ? extraText.slice(0, 200) : '';
     close();
-    onSubmit(dm, rel, extra, getTrustLevel(handle), youthCheckbox.checked);
+    onSubmit(dm, rel, extra, getTrustLevel(handle), youthCheckbox.checked, localNote);
   });
 
   overlay.addEventListener('click', (e) => {
@@ -548,7 +729,7 @@ function showModal(handle, onSubmit) {
 }
 
 // 設定用モーダル (showModalの実装を流用)
-function showSettingsModal() {
+function showSettingsModal(onClose = null) {
   removeModal();
 
   const overlay = document.createElement('div');
@@ -710,7 +891,7 @@ function showSettingsModal() {
   const closeBtn = document.createElement('button');
   closeBtn.className = 'gck-modal-btn-submit';
   closeBtn.textContent = '設定を閉じる';
-  closeBtn.addEventListener('click', close);
+  closeBtn.addEventListener('click', () => { close(); if (onClose) onClose(); });
   modalBottom.appendChild(closeBtn);
 
   modal.append(modalTop, modalScroll, modalBottom);
@@ -1062,7 +1243,21 @@ function createPanel(handle) {
   gearBtn.style.position = 'absolute';
   gearBtn.style.right = '4px';
   gearBtn.style.bottom = '4px';
-  gearBtn.onclick = () => showSettingsModal();
+  gearBtn.onclick = () => showSettingsModal(() => {
+    // 設定変更後にチェックボックスを即時再描画
+    const group = document.querySelector('.gck-checkbox-group');
+    if (group) {
+      // 通常チェックボックスのみ再描画（youth-cbは除く）
+      [...group.querySelectorAll('input.gck-checkbox:not(.gck-youth-cb)')].forEach(cb => {
+        const lbl = cb.parentElement;
+        if (lbl) lbl.style.display = '';
+      });
+      const visible = new Set(getVisibleCheckItems([...group.querySelectorAll('input.gck-checkbox:not(.gck-youth-cb)')].map(cb => cb.value)));
+      [...group.querySelectorAll('input.gck-checkbox:not(.gck-youth-cb)')].forEach(cb => {
+        cb.parentElement.style.display = visible.has(cb.value) ? '' : 'none';
+      });
+    }
+  });
 
   disclaimer.appendChild(gearBtn);
   panel.appendChild(disclaimer);
@@ -1155,11 +1350,11 @@ function createPanel(handle) {
 
   // メインボタン
   mainBtn.addEventListener('click', () => {
-    showModal(handle, (dmText, relationship, extraInfo, trustLevel, isYouth) => {
+    showModal(handle, (dmText, relationship, extraInfo, trustLevel, isYouth, localNote) => {
       setCache(handle);
       mainBtn.textContent = '✅ 調査済み（再調査）';
       mainBtn.classList.add('checked');
-      const query = buildGrokQuery(handle, dmText, relationship, extraInfo, trustLevel, isYouth);
+      const query = buildGrokQuery(handle, dmText, relationship, extraInfo, trustLevel, isYouth, localNote);
       window.open(`https://x.com/i/grok?text=${encodeURIComponent(query)}`, '_blank');
       showWaitingAnimation(panelBody);
     });

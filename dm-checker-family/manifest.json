@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "🐱 DM怪しいチェッカー",
+  "name": "DMチェッカー（大人＆子供版）",
   "version": "1.7.0",
-  "description": "XのDMで怪しいやつをGrokで即調査にゃ！",
+  "description": "大人も子供も使えるにゃ！XのDM詐欺やあぶない誘いからみんなを守るチェッカーにゃ。",
   "permissions": [
     "activeTab",
-    "scripting"
+    "scripting",
+    "storage"
   ],
   "content_scripts": [
     {
